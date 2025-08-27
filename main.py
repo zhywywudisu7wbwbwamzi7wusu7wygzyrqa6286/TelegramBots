@@ -88,8 +88,8 @@ def clone(board):
 
 def promote(board):
     for c in range(8):
-        if board[7][c] == 'w': board[7][c] = 'W'
-        if board[0][c] == 'b': board[0][c] = 'B'
+        if board[0][c] == 'w': board[0][c] = 'W'
+        if board[7][c] == 'b': board[7][c] = 'B'
 
 def find_captures_from(board, r, c, color):
     # Ko'p martalik olish: DFS
@@ -110,8 +110,8 @@ def find_captures_from(board, r, c, color):
                 new_eaten = eaten | {(mr,mc)}
                 # Upgrade temporary (promotion mid-sequence is allowed at the end)
                 tmp_piece = nb[tr][tc]
-                if color == 'w' and tr == 7 and tmp_piece == 'w': nb[tr][tc] = 'W'
-                if color == 'b' and tr == 0 and tmp_piece == 'b': nb[tr][tc] = 'B'
+                if color == 'w' and tr == 0 and tmp_piece == 'w': nb[tr][tc] = 'W'
+                if color == 'b' and tr == 7 and tmp_piece == 'b': nb[tr][tc] = 'B'
                 dfs(nb, tr, tc, path + [(tr, tc)], new_eaten)
         if not found:
             caps.append(((r, c), path, eaten))
@@ -150,14 +150,17 @@ def apply_move(board, move, color):
         (sr, sc), path, eaten = move
         cur_r, cur_c = sr, sc
         for (tr, tc) in path:
-            dr = (tr - cur_r)//abs(tr - cur_r)
-            dc = (tc - cur_c)//abs(tc - cur_c)
+            dr = (tr - cur_r) // 2
+            dc = (tc - cur_c) // 2
             nb[tr][tc] = nb[cur_r][cur_c]
             nb[cur_r][cur_c] = '.'
-            nb[cur_r + dr][cur_c + dc] = '.'  # eaten
+            nb[cur_r + dr][cur_c + dc] = '.'
+            # Promote mid-chain if landed on promotion row
+            tmp_piece = nb[tr][tc]
+            if color == 'w' and tr == 0 and tmp_piece == 'w': nb[tr][tc] = 'W'
+            if color == 'b' and tr == 7 and tmp_piece == 'b': nb[tr][tc] = 'B'
             cur_r, cur_c = tr, tc
-        # Promotion at end
-        promote(nb)
+        promote(nb)  # Final promote if needed
     else:
         (sr, sc), (tr, tc) = move
         nb[tr][tc] = nb[sr][sc]
@@ -171,8 +174,6 @@ def has_any_pieces(board, color):
 # ======== Botning yurishi ========
 def bot_make_move(board):
     lm = legal_moves(board, 'b')
-    if not lm['moves']:
-        return board, "🛑 Botda yurish yo‘q — Siz yutdingiz!"
     choice = random.choice(lm['moves'])
     nb = apply_move(board, choice, 'b')
     desc = "Bot yurdi."
@@ -189,7 +190,7 @@ def start_cmd(m):
     }
     b = games[chat_id]['board']
     lm = legal_moves(b, 'w')
-    selectable = set((src[0], src[1]) for src, *_ in ([ (mv[0],) ] if isinstance(mv[1], tuple) else [ (mv[0],) ] for mv in lm['moves']))
+    selectable = set(mv[0] for mv in lm['moves'])
     text = board_text(b, 'w')
     kb = make_keyboard(b, selectable=selectable)
     bot.send_message(chat_id, text, reply_markup=kb)
@@ -223,24 +224,24 @@ def on_cb(c):
 
     if c.data.startswith("sel:"):
         _, rs, cs = c.data.split(":")
-        r, s = int(rs), int(cs)
+        r, c_ = int(rs), int(cs)  # renamed to avoid conflict with c
         # Tanlangan manba bo'yicha borish mumkin joylarni topish
         dests = set()
         if lm['type'] == 'capture':
             for mv in lm['moves']:
                 (sr, sc), path, eaten = mv
-                if (sr, sc) == (r, s):
-                    dests.add(path[0])  # birinchi sakrash nuqtasi
+                if (sr, sc) == (r, c_) and path:
+                    dests.add(path[0])
         else:
             for mv in lm['moves']:
                 (sr, sc), (tr, tc) = mv
-                if (sr, sc) == (r, s):
+                if (sr, sc) == (r, c_):
                     dests.add((tr, tc))
-        state['selected'] = (r, s)
+        state['selected'] = (r, c_)
         text = board_text(board, 'w')
         kb = make_keyboard(board, highlights=dests)
         bot.edit_message_text(text, chat_id, c.message.message_id, reply_markup=kb)
-        bot.answer_callback_query(c.id, coord_to_alg(r,c)+" tanlandi")
+        bot.answer_callback_query(c.id, coord_to_alg(r, c_)+" tanlandi")
         return
 
     if c.data.startswith("to:") and state['selected']:
@@ -272,9 +273,18 @@ def on_cb(c):
         state['board'] = board
         state['selected'] = None
 
-        # Tekshiruv: botning toshi qolganmi va foydalanuvchinikimi?
+        # Tekshiruv: botning toshi qolganmi?
         if not has_any_pieces(board, 'b'):
             text = board_text(board, 'w') + "\n\n🎉 Tabriklaymiz! Bot toshsiz qoldi — siz yutdingiz!"
+            kb = make_keyboard(board)
+            bot.edit_message_text(text, chat_id, c.message.message_id, reply_markup=kb)
+            bot.answer_callback_query(c.id)
+            return
+
+        # Tekshiruv: bot yurishi bormi?
+        lm_bot = legal_moves(board, 'b')
+        if not lm_bot['moves']:
+            text = board_text(board, 'w') + "\n\n🎉 Tabriklaymiz! Botda yurish yo'q — siz yutdingiz!"
             kb = make_keyboard(board)
             bot.edit_message_text(text, chat_id, c.message.message_id, reply_markup=kb)
             bot.answer_callback_query(c.id)
@@ -290,14 +300,22 @@ def on_cb(c):
         # Bot yuradi
         nb, _desc = bot_make_move(board)
         state['board'] = nb
-        state['turn'] = 'w'
-        text = board_text(nb, 'w')
-        # Foydalanuvchi toshi qolmagan bo'lsa — mag'lubiyat
+
+        # Tekshiruv: foydalanuvchi toshi qolmaganmi?
         endnote = ""
         if not has_any_pieces(nb, 'w'):
             endnote = "\n\n😔 Sizning toshlaringiz qolmadi — bot yutdi."
-        kb = make_keyboard(nb, selectable=set((mv[0][0], mv[0][1]) for mv in legal_moves(nb, 'w')['moves']))
-        bot.edit_message_text(text + endnote, chat_id, c.message.message_id, reply_markup=kb)
+
+        # Tekshiruv: foydalanuvchi yurishi bormi?
+        lm_player = legal_moves(nb, 'w')
+        if not lm_player['moves']:
+            endnote = "\n\n😔 Sizda yurish yo'q — bot yutdi."
+
+        state['turn'] = 'w'
+        text = board_text(nb, 'w') + endnote
+        selectable = set(mv[0] for mv in lm_player['moves']) if lm_player['moves'] else set()
+        kb = make_keyboard(nb, selectable=selectable)
+        bot.edit_message_text(text, chat_id, c.message.message_id, reply_markup=kb)
         return
 
     bot.answer_callback_query(c.id)
